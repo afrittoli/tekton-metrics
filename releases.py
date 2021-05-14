@@ -196,6 +196,7 @@ def lead_time_prs():
         # If there are no releases, just skip this repo
         if not releases_raw:
           continue
+        mapping = {r['tag_name']: len(releases_raw) -1 - i for i, r in enumerate(releases_raw)}
         releases_published = {r['tag_name']:r['published_at'] for r in releases_raw}
         # List all closed PRs
         prs = get_prs(repo, "closed")
@@ -226,10 +227,14 @@ def lead_time_prs():
             stats['merged_to_release_days'] = \
               (prs_data['released_at'] - prs_data['merged_at']).astype('timedelta64[D]')
             prs_all[repo] = stats.apply(np.average, axis=0)
-            # Add the release column for grouping
+            # Add the release column for grouping, and sort it by release
             stats['release'] = prs_data['release']
-            # grouped = stats.groupby('release').mean().plot()
-            plot = stats.groupby('release').mean().plot()
+            stats['sort_key'] = stats['release'].map(mapping)
+            stats_aggregated = stats.groupby('release').mean()
+            # Filter only major releases
+            filter = stats_aggregated.apply(lambda x: REGEX_MAJOR.match(x.name) is not None, axis=1)
+            stats_filtered = stats_aggregated[filter]
+            plot = stats_filtered.sort_values('sort_key').drop('sort_key', axis=1).plot()
             fig = plot.get_figure()
             fig.savefig(f"lead_time_{repo}.png")
             # grouped.apply(lambda x: np.mean(x)).plot()
