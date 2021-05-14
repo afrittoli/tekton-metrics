@@ -193,6 +193,9 @@ def lead_time_prs():
         # Use the list of releases from the GitHub API
         # to only use tags that are published to releases
         releases_raw = get_releases(repo)
+        # If there are no releases, just skip this repo
+        if not releases_raw:
+          continue
         releases_published = {r['tag_name']:r['published_at'] for r in releases_raw}
         # List all closed PRs
         prs = get_prs(repo, "closed")
