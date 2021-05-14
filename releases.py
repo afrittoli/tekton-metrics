@@ -1,23 +1,58 @@
 #!/usr/bin/env python3
 
+import argparse
+import git
 import hashlib
 import json
 import matplotlib.pyplot as plt
+import numpy as np
 import os
 import os.path
+import pandas as pd
 import re
 import requests
 from requests.auth import HTTPBasicAuth
 import sys
+from tabulate import tabulate
 
 GITHUB_API_ROOT = "https://api.github.com"
 GITHUB_API_REPOS = "/orgs/{org}/repos"
-GITHUB_API_RELEASES = "/repos/{owner}/{repo}/releases?per_page=100"
+GITHUB_API_RELEASES = "/repos/{owner}/{repo}/releases?per_page=1000"
+GITHUB_API_PRS = "/repos/{owner}/{repo}/pulls?per_page=1000&state={state}"
 GITHUB_ORG = "tektoncd"
 GITHUB_CACHE = '.cache'
+GIT_CLONE_FOLDER = os.path.join(GITHUB_CACHE, 'git')
+
+METRICS = ['release_plot', 'lead_time_prs']
 
 REGEX_MAJOR = re.compile('^v[0-9]+\.[0-9]+\.0($|-1$)')
 REGEX_RC = re.compile('^v[0-9]+\.[0-9]+\.0-rc[0-9]+$')
+
+
+def clone_repo(org, repo, update=False):
+    project = (org, repo)
+    repo = "/".join(project)
+    clone_dir = os.path.join(GIT_CLONE_FOLDER, *project)
+
+    if os.path.isdir(clone_dir):
+        if not update:
+            print(f'{project}: Cache folder {clone_dir} found, skipping clone.')
+            return repo, git.Repo(clone_dir)
+        # Cleanup and update via fetch --all
+        print(f'{project}: updating started')
+        cloned_repo = git.Repo(clone_dir)
+        cloned_repo.git.reset('--hard')
+        cloned_repo.git.clean('-xdf')
+        cloned_repo.git.fetch('--all')
+        print(f'{project}: updating completed')
+        return repo, cloned_repo
+
+    # Clone the repo
+    print(f'{project}: cloning started')
+    cloned_repo = git.Repo.clone_from('https://github.com/' + repo, clone_dir)
+    print(f'{project}: cloning completed')
+    return repo, cloned_repo
+
 
 def github_request(url):
     if cache := github_from_cache(url):
@@ -64,6 +99,12 @@ def get_releases(repo):
     return github_request(url)
 
 
+def get_prs(repo, state):
+    url = GITHUB_API_ROOT + GITHUB_API_PRS.format(
+      owner=GITHUB_ORG, repo=repo, state=state)
+    return github_request(url)
+
+
 def color_from_release(name):
     if REGEX_MAJOR.match(name):
       return 800
@@ -106,7 +147,7 @@ def plot_releases(repos, releases):
     fig.savefig("releases.png", dpi=300)
 
 
-def main():
+def release_plot():
     repos = [x['name'] for x in get_repos()]
     data = []
     for repo in repos:
@@ -119,6 +160,67 @@ def main():
     plot_releases(repos, release_dates)
 
 
+def belongs_to(commit_sha, repo):
+    # Return the closes release commit belongs to if any
+    try:
+      reference = repo.git.describe(commit_sha, '--contains')
+    except git.exc.GitCommandError as gce:
+      # Ignore if describe fails because there is no tag
+      if 'fatal: cannot describe' in str(gce):
+        return
+      else:
+        raise gce
+    tag = re.search('([^~]*)(?:$|~[1-9]+$)', reference)
+    return tag.group(1) if tag else None
+
+
+def lead_time_prs():
+    repos = [x['name'] for x in get_repos()]
+    prs_all = {}
+    for repo in repos:
+        # Use a local clone so we can "git describe"
+        _, clone = clone_repo(GITHUB_ORG, repo)
+        # Use the list of releases from the GitHub API
+        # to only use tags that are published to releases
+        releases_raw = get_releases(repo)
+        releases_published = {r['tag_name']:r['published_at'] for r in releases_raw}
+        # List all closed PRs
+        prs = get_prs(repo, "closed")
+        prs_data_list = []
+        for pr in prs:
+            # Filter out PRs that were not merged
+            if not pr['merged_at']:
+                continue
+            release = belongs_to(pr['merge_commit_sha'], clone)
+            # Filter out PRs that have no tag on top or whose tags
+            # do not match a published release.
+            # The assumption here is that the only tags we have in repos
+            # with releases are those associated to releases.
+            if not release or release not in releases_published:
+                continue
+            prs_data_list.append(
+              dict(number=pr['number'],
+                   created_at=pd.Timestamp(pr['created_at']),
+                   merged_at=pd.Timestamp(pr['merged_at']),
+                   released_at=pd.Timestamp(releases_published[release])))
+        prs_data = pd.DataFrame(prs_data_list)
+        # There might be no data at all for a repo
+        if not prs_data.empty:
+            stats = pd.DataFrame()
+            stats['open_to_release_days'] = \
+              (prs_data['released_at'] - prs_data['created_at']).astype('timedelta64[D]')
+            stats['merged_to_release_days'] = \
+              (prs_data['released_at'] - prs_data['merged_at']).astype('timedelta64[D]')
+            prs_all[repo] = stats.apply(np.average, axis=0)
+    for repo, stats in prs_all.items():
+      print("{}:\n{}\n".format(repo, stats.to_string()))
+
+
 if __name__ == "__main__":
     # execute only if run as a script
-    main()
+    parser = argparse.ArgumentParser(description='Tekton metrics fun')
+    parser.add_argument('--metric', default='lead_time_prs',
+                        help='name of the metric to generate, one of {}'.format(METRICS),
+                        choices=METRICS)
+    args = parser.parse_args()
+    locals()[args.metric]()

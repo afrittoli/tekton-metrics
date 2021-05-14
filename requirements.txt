@@ -1,2 +1,5 @@
 matplotlib
 requests
+gitpython>=3.1.11
+pandas
+tabulate
