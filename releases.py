@@ -231,6 +231,10 @@ def lead_time_prs():
             stats['release'] = prs_data['release']
             stats['sort_key'] = stats['release'].map(mapping)
             stats_aggregated = stats.groupby('release').mean()
+            # First graph all releases
+            plot = stats_aggregated.sort_values('sort_key').drop('sort_key', axis=1).plot()
+            fig = plot.get_figure()
+            fig.savefig(f"lead_time_all_{repo}.png")
             # Filter only major releases
             filter = stats_aggregated.apply(lambda x: REGEX_MAJOR.match(x.name) is not None, axis=1)
             stats_filtered = stats_aggregated[filter]
