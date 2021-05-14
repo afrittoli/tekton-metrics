@@ -1,0 +1,31 @@
+pipeline:
+open_to_release_days      32.396189
+merged_to_release_days    27.400702
+
+dashboard:
+open_to_release_days      18.749141
+merged_to_release_days    16.303265
+
+cli:
+open_to_release_days      23.101036
+merged_to_release_days    19.506477
+
+triggers:
+open_to_release_days      29.295956
+merged_to_release_days    24.880515
+
+operator:
+open_to_release_days      87.231638
+merged_to_release_days    82.920904
+
+hub:
+open_to_release_days      34.395833
+merged_to_release_days    21.270833
+
+chains:
+open_to_release_days      214.682540
+merged_to_release_days    208.777778
+
+results:
+open_to_release_days      35.072464
+merged_to_release_days    30.724638
