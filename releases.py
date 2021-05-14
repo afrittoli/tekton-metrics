@@ -13,12 +13,11 @@ import re
 import requests
 from requests.auth import HTTPBasicAuth
 import sys
-from tabulate import tabulate
 
 GITHUB_API_ROOT = "https://api.github.com"
 GITHUB_API_REPOS = "/orgs/{org}/repos"
-GITHUB_API_RELEASES = "/repos/{owner}/{repo}/releases?per_page=1000"
-GITHUB_API_PRS = "/repos/{owner}/{repo}/pulls?per_page=1000&state={state}"
+GITHUB_API_RELEASES = "/repos/{owner}/{repo}/releases?per_page=100"
+GITHUB_API_PRS = "/repos/{owner}/{repo}/pulls?per_page=100&state={state}"
 GITHUB_ORG = "tektoncd"
 GITHUB_CACHE = '.cache'
 GIT_CLONE_FOLDER = os.path.join(GITHUB_CACHE, 'git')
@@ -36,7 +35,7 @@ def clone_repo(org, repo, update=False):
 
     if os.path.isdir(clone_dir):
         if not update:
-            print(f'{project}: Cache folder {clone_dir} found, skipping clone.')
+            # print(f'{project}: Cache folder {clone_dir} found, skipping clone.')
             return repo, git.Repo(clone_dir)
         # Cleanup and update via fetch --all
         print(f'{project}: updating started')
@@ -54,6 +53,16 @@ def clone_repo(org, repo, update=False):
     return repo, cloned_repo
 
 
+def _github_single_request(url, params):
+    r = requests.get(url, **params)
+    try:
+      r.raise_for_status()
+    except requests.exceptions.HTTPError as e:
+      print("Error calling api {}: {}".format(url, e))
+      sys.exit(1)
+    return r
+
+
 def github_request(url):
     if cache := github_from_cache(url):
       return cache
@@ -62,14 +71,14 @@ def github_request(url):
     params = {}
     if username and token:
         params['auth'] = HTTPBasicAuth(username, token)
-    r = requests.get(url, **params)
-    try:
-      r.raise_for_status()
-    except requests.exceptions.HTTPError as e:
-      print("Error calling api {}: {}".format(url, e))
-      sys.exit(1)
-    github_to_cache(url, r.json())
-    return r.json()
+    r = _github_single_request(url, params)
+    result = r.json()
+    # Loop through all pages
+    while 'next' in r.links.keys():
+      r = _github_single_request(r.links['next']['url'], params)
+      result.extend(r.json())
+    github_to_cache(url, result)
+    return result
 
 
 def github_from_cache(url):
@@ -170,7 +179,7 @@ def belongs_to(commit_sha, repo):
         return
       else:
         raise gce
-    tag = re.search('([^~]*)(?:$|~[1-9]+$)', reference)
+    tag = re.search('^([^~]*)(?:$|~[0-9]+$)', reference)
     return tag.group(1) if tag else None
 
 
@@ -178,6 +187,7 @@ def lead_time_prs():
     repos = [x['name'] for x in get_repos()]
     prs_all = {}
     for repo in repos:
+        print(f"Processing {repo}")
         # Use a local clone so we can "git describe"
         _, clone = clone_repo(GITHUB_ORG, repo)
         # Use the list of releases from the GitHub API
@@ -200,6 +210,7 @@ def lead_time_prs():
                 continue
             prs_data_list.append(
               dict(number=pr['number'],
+                   release=release,
                    created_at=pd.Timestamp(pr['created_at']),
                    merged_at=pd.Timestamp(pr['merged_at']),
                    released_at=pd.Timestamp(releases_published[release])))
@@ -212,6 +223,13 @@ def lead_time_prs():
             stats['merged_to_release_days'] = \
               (prs_data['released_at'] - prs_data['merged_at']).astype('timedelta64[D]')
             prs_all[repo] = stats.apply(np.average, axis=0)
+            # Add the release column for grouping
+            stats['release'] = prs_data['release']
+            # grouped = stats.groupby('release').mean().plot()
+            plot = stats.groupby('release').mean().plot()
+            fig = plot.get_figure()
+            fig.savefig(f"lead_time_{repo}.png")
+            # grouped.apply(lambda x: np.mean(x)).plot()
     for repo, stats in prs_all.items():
       print("{}:\n{}\n".format(repo, stats.to_string()))
 
